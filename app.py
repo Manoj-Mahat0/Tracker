@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
+from datetime import datetime
 import uvicorn
+from typing import Optional
 
 # Create FastAPI instance
 app = FastAPI()
@@ -27,10 +28,10 @@ class UserLogin(BaseModel):
 
 class TimeLog(BaseModel):
     username: str
-    study_start: str
-    study_end: str
-    work_start: str
-    work_end: str
+    study_start: Optional[str] = None  # Optional field
+    study_end: Optional[str] = None    # Optional field
+    work_start: Optional[str] = None   # Optional field
+    work_end: Optional[str] = None     # Optional field
 
 # Routes
 @app.post("/signup")
@@ -70,19 +71,34 @@ async def log_time(time_log: TimeLog):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Parse datetime strings
-    try:
-        study_start_dt = datetime.strptime(time_log.study_start, "%Y-%m-%d %H:%M:%S")
-        study_end_dt = datetime.strptime(time_log.study_end, "%Y-%m-%d %H:%M:%S")
-        work_start_dt = datetime.strptime(time_log.work_start, "%Y-%m-%d %H:%M:%S")
-        work_end_dt = datetime.strptime(time_log.work_end, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid datetime format")
+    # Initialize datetime values as None or parse the datetime if provided
+    study_start_dt = study_end_dt = work_start_dt = work_end_dt = None
 
-    # Derive the date from study_start and store it for easy querying
-    log_date = study_start_dt.date()
+    if time_log.study_start:
+        try:
+            study_start_dt = datetime.strptime(time_log.study_start, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid study_start datetime format")
 
-    # Create log entry
+    if time_log.study_end:
+        try:
+            study_end_dt = datetime.strptime(time_log.study_end, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid study_end datetime format")
+
+    if time_log.work_start:
+        try:
+            work_start_dt = datetime.strptime(time_log.work_start, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid work_start datetime format")
+
+    if time_log.work_end:
+        try:
+            work_end_dt = datetime.strptime(time_log.work_end, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid work_end datetime format")
+
+    # Create log entry (fields that are None will not be included)
     log_entry = {
         "user_id": db_user["_id"],  # Store the user_id
         "username": time_log.username,  # Store the username
@@ -90,9 +106,11 @@ async def log_time(time_log: TimeLog):
         "study_end": study_end_dt,
         "work_start": work_start_dt,
         "work_end": work_end_dt,
-        "date": log_date,  # Store the date separately for querying
         "timestamp": datetime.now()
     }
+
+    # Remove any None fields from log entry before inserting
+    log_entry = {k: v for k, v in log_entry.items() if v is not None}
 
     # Insert log entry into the database
     collection.insert_one(log_entry)
@@ -101,35 +119,24 @@ async def log_time(time_log: TimeLog):
 
 @app.get("/get-logs")
 async def get_logs(username: str, date: str):
-    # Parse the date from the request
-    try:
-        query_date = datetime.strptime(date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
-
-    # Query the database for logs based on username and date
-    logs_cursor = collection.find({
-        "username": username,
-        "date": query_date
-    })
-
-    logs_list = list(logs_cursor)  # Convert cursor to a list
-    if not logs_list:
-        raise HTTPException(status_code=404, detail="No logs found for the user on this date")
-
-    # Prepare the logs in the desired format
-    logs = [
-        {
-            "username": log["username"],
-            "study_start": log["study_start"].strftime("%Y-%m-%d %H:%M:%S"),
-            "study_end": log["study_end"].strftime("%Y-%m-%d %H:%M:%S"),
-            "work_start": log["work_start"].strftime("%Y-%m-%d %H:%M:%S"),
-            "work_end": log["work_end"].strftime("%Y-%m-%d %H:%M:%S")
-        }
-        for log in logs_list
-    ]
+    # Logic to query logs based on username and date
+    logs = collection.find({"username": username, "date": date})  # Modify query as needed
+    if not logs:
+        raise HTTPException(status_code=404, detail="No logs found for the user")
     
-    return {"logs": logs}
+    # Convert logs to list
+    log_list = []
+    for log in logs:
+        log_list.append({
+            "username": log["username"],
+            "study_start": log.get("study_start"),
+            "study_end": log.get("study_end"),
+            "work_start": log.get("work_start"),
+            "work_end": log.get("work_end"),
+            "timestamp": log["timestamp"]
+        })
+    
+    return log_list
 
 @app.get("/get-user-details/{username}")
 async def get_user_details(username: str):
