@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+from datetime import datetime, timedelta
 import uvicorn
 
 # Create FastAPI instance
@@ -74,6 +74,11 @@ async def log_time(time_log: TimeLog):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid datetime format")
 
+    # Ensure user exists
+    user = users_collection.find_one({"_id": time_log.user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
     # Store the time log in the database
     log_entry = {
         "user_id": time_log.user_id,
@@ -88,11 +93,29 @@ async def log_time(time_log: TimeLog):
     return {"message": "Time log added successfully!"}
 
 @app.get("/get-logs")
-async def get_logs(user_id: str):
-    # Retrieve logs for the user
-    logs = list(collection.find({"user_id": user_id}, {"_id": 0}))
+async def get_logs(username: str, date: str = Query(..., example="2024-11-14")):
+    # Retrieve user ID from the username
+    db_user = users_collection.find_one({"username": username})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Parse date to filter logs for that day
+    try:
+        date_obj = datetime.strptime(date, "%Y-%m-%d")
+        start_of_day = datetime(date_obj.year, date_obj.month, date_obj.day)
+        end_of_day = start_of_day + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    
+    # Retrieve logs for the user for the specified date range
+    logs = list(collection.find({
+        "user_id": db_user["_id"],
+        "timestamp": {"$gte": start_of_day, "$lt": end_of_day}
+    }, {"_id": 0}))
+
     if not logs:
-        raise HTTPException(status_code=404, detail="No logs found for the user")
+        raise HTTPException(status_code=404, detail="No logs found for the user on this day")
+
     return logs
 
 @app.get("/get-user-details/{username}")
