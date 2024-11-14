@@ -79,6 +79,9 @@ async def log_time(time_log: TimeLog):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid datetime format")
 
+    # Derive the date from study_start and store it for easy querying
+    log_date = study_start_dt.date()
+
     # Create log entry
     log_entry = {
         "user_id": db_user["_id"],  # Store the user_id
@@ -87,6 +90,7 @@ async def log_time(time_log: TimeLog):
         "study_end": study_end_dt,
         "work_start": work_start_dt,
         "work_end": work_end_dt,
+        "date": log_date,  # Store the date separately for querying
         "timestamp": datetime.now()
     }
 
@@ -97,11 +101,35 @@ async def log_time(time_log: TimeLog):
 
 @app.get("/get-logs")
 async def get_logs(username: str, date: str):
-    # Logic to query logs based on username and date
-    logs = collection.find({"username": username, "date": date})  # Modify query as needed
-    if not logs:
-        raise HTTPException(status_code=404, detail="No logs found for the user")
-    return logs
+    # Parse the date from the request
+    try:
+        query_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    # Query the database for logs based on username and date
+    logs_cursor = collection.find({
+        "username": username,
+        "date": query_date
+    })
+
+    logs_list = list(logs_cursor)  # Convert cursor to a list
+    if not logs_list:
+        raise HTTPException(status_code=404, detail="No logs found for the user on this date")
+
+    # Prepare the logs in the desired format
+    logs = [
+        {
+            "username": log["username"],
+            "study_start": log["study_start"].strftime("%Y-%m-%d %H:%M:%S"),
+            "study_end": log["study_end"].strftime("%Y-%m-%d %H:%M:%S"),
+            "work_start": log["work_start"].strftime("%Y-%m-%d %H:%M:%S"),
+            "work_end": log["work_end"].strftime("%Y-%m-%d %H:%M:%S")
+        }
+        for log in logs_list
+    ]
+    
+    return {"logs": logs}
 
 @app.get("/get-user-details/{username}")
 async def get_user_details(username: str):
