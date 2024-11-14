@@ -1,72 +1,82 @@
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from pymongo import MongoClient
-from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import uvicorn
 
-app = Flask(__name__)
+# Create FastAPI instance
+app = FastAPI()
 
-# Connect to MongoDB (replace with your MongoDB URI)
+# MongoDB connection (replace with your MongoDB URI)
 client = MongoClient("mongodb+srv://manojmahato08779:Sonix08779Mj@cluster0.xd2uh.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 db = client['time_tracking_db']
-collection = db['user_logs']
 users_collection = db['users']
+collection = db['user_logs']
 
-@app.route('/signup', methods=['POST'])
-def signup():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
+# Models
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    name: str
+    phone_number: str
 
-    if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
+class UserLogin(BaseModel):
+    username: str
+    password: str
 
-    if users_collection.find_one({"username": username}):
-        return jsonify({"error": "Username already exists"}), 400
+class TimeLog(BaseModel):
+    user_id: str
+    study_start: str
+    study_end: str
+    work_start: str
+    work_end: str
 
-    hashed_password = generate_password_hash(password)
-    users_collection.insert_one({"username": username, "password": hashed_password})
+# Routes
+@app.post("/signup")
+async def signup(user: UserCreate):
+    # Check if user already exists
+    if users_collection.find_one({"username": user.username}):
+        raise HTTPException(status_code=400, detail="Username already exists")
 
-    return jsonify({"message": "User registered successfully!"}), 201
+    # Hash the password and store the user details
+    hashed_password = generate_password_hash(user.password)
+    users_collection.insert_one({
+        "username": user.username,
+        "password": hashed_password,
+        "name": user.name,
+        "phone_number": user.phone_number
+    })
 
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
+    return {"message": "User registered successfully!"}
 
-    if not username or not password:
-        return jsonify({"error": "Username and password are required"}), 400
+@app.post("/login")
+async def login(user: UserLogin):
+    # Retrieve the user from the database
+    db_user = users_collection.find_one({"username": user.username})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if password matches
+    if not check_password_hash(db_user['password'], user.password):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    
+    return {"message": "Login successful!"}
 
-    user = users_collection.find_one({"username": username})
-    if user and check_password_hash(user['password'], password):
-        return jsonify({"message": "Login successful!", "user_id": str(user['_id'])}), 200
-    else:
-        return jsonify({"error": "Invalid username or password"}), 401
-
-@app.route('/log-time', methods=['POST'])
-def log_time():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    study_start = data.get('study_start')
-    study_end = data.get('study_end')
-    work_start = data.get('work_start')
-    work_end = data.get('work_end')
-
-    if not user_id:
-        return jsonify({"error": "User ID is required"}), 400
-
-    # Convert strings to datetime objects (optional, for validation)
+@app.post("/log-time")
+async def log_time(time_log: TimeLog):
     try:
-        study_start_dt = datetime.strptime(study_start, "%Y-%m-%d %H:%M:%S")
-        study_end_dt = datetime.strptime(study_end, "%Y-%m-%d %H:%M:%S")
-        work_start_dt = datetime.strptime(work_start, "%Y-%m-%d %H:%M:%S")
-        work_end_dt = datetime.strptime(work_end, "%Y-%m-%d %H:%M:%S")
-    except ValueError as e:
-        return jsonify({"error": "Invalid datetime format"}), 400
+        # Parse datetime strings
+        study_start_dt = datetime.strptime(time_log.study_start, "%Y-%m-%d %H:%M:%S")
+        study_end_dt = datetime.strptime(time_log.study_end, "%Y-%m-%d %H:%M:%S")
+        work_start_dt = datetime.strptime(time_log.work_start, "%Y-%m-%d %H:%M:%S")
+        work_end_dt = datetime.strptime(time_log.work_end, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid datetime format")
 
-    # Insert data into MongoDB
+    # Store the time log in the database
     log_entry = {
-        "user_id": user_id,
+        "user_id": time_log.user_id,
         "study_start": study_start_dt,
         "study_end": study_end_dt,
         "work_start": work_start_dt,
@@ -75,16 +85,31 @@ def log_time():
     }
     collection.insert_one(log_entry)
 
-    return jsonify({"message": "Time log added successfully!"}), 200
+    return {"message": "Time log added successfully!"}
 
-@app.route('/get-logs', methods=['GET'])
-def get_logs():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({"error": "User ID is required"}), 400
-
+@app.get("/get-logs")
+async def get_logs(user_id: str):
+    # Retrieve logs for the user
     logs = list(collection.find({"user_id": user_id}, {"_id": 0}))
-    return jsonify(logs), 200
+    if not logs:
+        raise HTTPException(status_code=404, detail="No logs found for the user")
+    return logs
 
-if __name__ == '__main__':
-    app.run(debug=True)
+@app.get("/get-user-details/{username}")
+async def get_user_details(username: str):
+    # Retrieve the user details from the database
+    db_user = users_collection.find_one({"username": username})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Return user details (excluding the password)
+    user_details = {
+        "username": db_user["username"],
+        "name": db_user["name"],
+        "phone_number": db_user["phone_number"]
+    }
+    return user_details
+
+# Main entry point
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
