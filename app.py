@@ -26,7 +26,7 @@ class UserLogin(BaseModel):
     password: str
 
 class TimeLog(BaseModel):
-    user_id: str
+    username: str
     study_start: str
     study_end: str
     work_start: str
@@ -65,8 +65,13 @@ async def login(user: UserLogin):
 
 @app.post("/log-time")
 async def log_time(time_log: TimeLog):
+    # Retrieve user from the database by username
+    db_user = users_collection.find_one({"username": time_log.username})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Parse datetime strings
     try:
-        # Parse datetime strings
         study_start_dt = datetime.strptime(time_log.study_start, "%Y-%m-%d %H:%M:%S")
         study_end_dt = datetime.strptime(time_log.study_end, "%Y-%m-%d %H:%M:%S")
         work_start_dt = datetime.strptime(time_log.work_start, "%Y-%m-%d %H:%M:%S")
@@ -74,27 +79,25 @@ async def log_time(time_log: TimeLog):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid datetime format")
 
-    # Ensure user exists
-    user = users_collection.find_one({"_id": time_log.user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Store the time log in the database
+    # Create log entry
     log_entry = {
-        "user_id": time_log.user_id,
+        "user_id": db_user["_id"],  # Store the user_id
+        "username": time_log.username,  # Store the username
         "study_start": study_start_dt,
         "study_end": study_end_dt,
         "work_start": work_start_dt,
         "work_end": work_end_dt,
         "timestamp": datetime.now()
     }
+
+    # Insert log entry into the database
     collection.insert_one(log_entry)
 
     return {"message": "Time log added successfully!"}
 
 @app.get("/get-logs")
 async def get_logs(username: str, date: str = Query(..., example="2024-11-14")):
-    # Retrieve user ID from the username
+    # Retrieve user by username
     db_user = users_collection.find_one({"username": username})
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -109,7 +112,7 @@ async def get_logs(username: str, date: str = Query(..., example="2024-11-14")):
     
     # Retrieve logs for the user for the specified date range
     logs = list(collection.find({
-        "user_id": db_user["_id"],
+        "user_id": db_user["_id"],  # Using the user's _id to filter logs
         "timestamp": {"$gte": start_of_day, "$lt": end_of_day}
     }, {"_id": 0}))
 
