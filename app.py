@@ -74,29 +74,18 @@ async def log_time(time_log: TimeLog):
     # Initialize datetime values as None or parse the datetime if provided
     study_start_dt = study_end_dt = work_start_dt = work_end_dt = None
 
-    if time_log.study_start:
-        try:
+    # Improved error handling for datetime parsing
+    try:
+        if time_log.study_start:
             study_start_dt = datetime.strptime(time_log.study_start, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid study_start datetime format")
-
-    if time_log.study_end:
-        try:
+        if time_log.study_end:
             study_end_dt = datetime.strptime(time_log.study_end, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid study_end datetime format")
-
-    if time_log.work_start:
-        try:
+        if time_log.work_start:
             work_start_dt = datetime.strptime(time_log.work_start, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid work_start datetime format")
-
-    if time_log.work_end:
-        try:
+        if time_log.work_end:
             work_end_dt = datetime.strptime(time_log.work_end, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid work_end datetime format")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {str(e)}")
 
     # Create log entry (fields that are None will not be included)
     log_entry = {
@@ -119,15 +108,30 @@ async def log_time(time_log: TimeLog):
 
 @app.get("/get-logs")
 async def get_logs(username: str, date: str):
-    # Logic to query logs based on username and date
-    logs = collection.find({"username": username, "date": date})  # Modify query as needed
-    if not logs:
-        raise HTTPException(status_code=404, detail="No logs found for the user")
+    # Convert date string to a datetime object, handling different formats
+    try:
+        query_date = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use 'YYYY-MM-DD'.")
+
+    # Create the range for the start of the day to the end of the day
+    start_of_day = query_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = query_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    # Query the logs collection based on username and the timestamp range
+    logs = collection.find({
+        "username": username,
+        "timestamp": {"$gte": start_of_day, "$lte": end_of_day}
+    })
+
+    log_list = list(logs)
+    if not log_list:
+        raise HTTPException(status_code=404, detail="No logs found for the user on this date.")
     
-    # Convert logs to list
-    log_list = []
-    for log in logs:
-        log_list.append({
+    # Convert logs to a response-friendly format
+    response_logs = []
+    for log in log_list:
+        response_logs.append({
             "username": log["username"],
             "study_start": log.get("study_start"),
             "study_end": log.get("study_end"),
@@ -136,7 +140,7 @@ async def get_logs(username: str, date: str):
             "timestamp": log["timestamp"]
         })
     
-    return log_list
+    return {"logs": response_logs}
 
 @app.get("/get-user-details/{username}")
 async def get_user_details(username: str):
